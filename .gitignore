@@ -1,0 +1,19 @@
+# Секрети
+.env
+
+# Тимчасові файли та дампи
+schema.sql
+*.sql
+
+# Важкі моделі ML
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+venv/
+*.pyc
+
+# Налаштування IDE (якщо є)
+.vscode/
+.idea/
