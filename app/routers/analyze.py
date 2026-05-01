@@ -1,4 +1,5 @@
 import uuid
+import gc
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -36,11 +37,12 @@ async def run_deep_analysis(scan_id: uuid.UUID, image_bytes: bytes):
 
             # 2. Витягуємо колірну палітру
             palette = extract_palette(image_bytes, n_colors=5)
-
+            gc.collect()
             # 3. Визначаємо стиль (YOLOv8)
             try:
                 # На локалхості можеш лишити imgsz=640, але для Render краще 320
                 detected_style = detect_style(image_bytes)
+                gc.collect()
             except Exception as e:
                 print(f"Error in YOLO: {e}")
                 detected_style = "Modern"
