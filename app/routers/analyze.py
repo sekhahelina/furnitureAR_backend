@@ -2,14 +2,13 @@ import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload # Додай цей імпорт на початку файлу
 from sqlalchemy.orm import selectinload
-from app.models.recommendation import Recommendation # Імпортуй модель рекомендації
 
 from app.database import get_db, AsyncSessionLocal
-from app.config import settings
 from app.models.user import User
 from app.models.room_scan import RoomScan, ScanStatus
+from app.models.recommendation import Recommendation
+from app.models.product import Product
 from app.schemas.room_scan import ScanStatusOut
 from app.core.dependencies import get_current_user
 from app.services.color_extractor import extract_palette
@@ -108,30 +107,43 @@ async def get_scan_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 1. Завантажуємо скан разом із ланцюжком рекомендацій
-    result = await db.execute(
-        select(RoomScan)
-        .options(
-            selectinload(RoomScan.recommendations) # Завантажуємо зв'язки з таблиці recommendations
-            .selectinload(Recommendation.product)  # Для кожної рекомендації беремо сам продукт
+    try:
+        # 1. Спершу отримуємо основну інформацію про скан
+        result = await db.execute(
+            select(RoomScan).where(
+                RoomScan.id == scan_id,
+                RoomScan.user_id == current_user.id
+            )
         )
-        .where(RoomScan.id == scan_id, RoomScan.user_id == current_user.id)
-    )
-    scan = result.scalar_one_or_none()
+        scan = result.scalar_one_or_none()
 
-    if not scan:
-        raise HTTPException(status_code=404, detail="Скан не знайдено")
+        if not scan:
+            raise HTTPException(status_code=404, detail="Скан не знайдено")
 
-    # 2. Формуємо список чистих об'єктів товарів для відповіді
-    recommended_products = []
-    if scan.recommendations:
-        # Витягуємо об'єкт Product з кожної рекомендації
-        recommended_products = [rec.product for rec in scan.recommendations if rec.product]
+        # 2. Якщо аналіз готовий, підтягуємо товари окремим кроком
+        recommended_products = []
+        if scan.status == ScanStatus.DONE:
+            # Використовуємо зв'язок через таблицю рекомендацій
+            rec_result = await db.execute(
+                select(Recommendation)
+                .options(selectinload(Recommendation.product))
+                .where(Recommendation.scan_id == scan_id)
+            )
+            recs = rec_result.scalars().all()
+            recommended_products = [r.product for r in recs if r.product]
 
-    return ScanStatusOut(
-        scan_id=scan.id,
-        status=scan.status.value,
-        detected_style=scan.detected_style,
-        color_palette=scan.color_palette,
-        products=recommended_products # Тепер тут буде масив товарів, а не []
-    )
+        return ScanStatusOut(
+            scan_id=scan.id,
+            status=scan.status.value,
+            detected_style=scan.detected_style,
+            color_palette=scan.color_palette,
+            products=recommended_products
+        )
+
+    except Exception as e:
+        # Це виведе реальну причину 502 помилки в консоль Render
+        print(f"CRITICAL ERROR in get_scan_status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Внутрішня помилка сервера під час отримання статусу"
+        )
