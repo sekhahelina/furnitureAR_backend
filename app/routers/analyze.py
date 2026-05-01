@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status,
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.database import get_db, sessionmanager  # припускаємо, що у вас є доступ до фабрики сесій
+# Прибираємо sessionmanager, залишаємо тільки get_db
+from app.database import get_db
 from app.config import settings
 from app.models.user import User
 from app.models.room_scan import RoomScan, ScanStatus
@@ -22,12 +23,12 @@ ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 async def run_deep_analysis(scan_id: uuid.UUID, image_bytes: bytes):
     """
     Фонова функція для аналізу зображення.
-    Вона працює окремо від основного запиту.
+    Використовує генератор get_db для отримання сесії.
     """
-    # Створюємо окрему сесію для фонового завдання
-    async with sessionmanager.session() as db:
+    async for db in get_db():
         result = await db.execute(select(RoomScan).where(RoomScan.id == scan_id))
         scan = result.scalar_one_or_none()
+
         if not scan:
             return
 
@@ -37,28 +38,28 @@ async def run_deep_analysis(scan_id: uuid.UUID, image_bytes: bytes):
 
             # 2. Визначаємо стиль (YOLOv8)
             try:
-                # В сервісі detect_style ОБОВ'ЯЗКОВО поставте imgsz=320
                 detected_style = detect_style(image_bytes)
             except Exception:
-                detected_style = "Modern"  # Fallback для стабільності
+                detected_style = "Modern"  # Заглушка для стабільності
 
             # 3. Отримуємо рекомендації
             products = await get_recommendations(db, style=detected_style, limit=12)
 
-            # 4. Оновлюємо статус та дані
+            # 4. Оновлюємо дані сканування
             scan.color_palette = palette
             scan.detected_style = detected_style
             scan.status = ScanStatus.DONE
 
-            # 5. Зберігаємо рекомендації в проміжну таблицю
+            # 5. Зберігаємо рекомендації
             await save_recommendations(db, scan=scan, products=products)
-
             await db.commit()
 
         except Exception as e:
-            print(f"Background analysis error: {e}")
+            print(f"Background Error: {e}")
             scan.status = ScanStatus.ERROR
             await db.commit()
+
+        break  # Виходимо, щоб закрити сесію
 
 
 @router.post("/", response_model=ScanStatusOut)
@@ -68,7 +69,7 @@ async def analyze_room(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user),
 ):
-    # 1. Валідація
+    # Валідація
     if file.content_type not in ALLOWED_CONTENT_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -76,28 +77,28 @@ async def analyze_room(
         )
 
     image_bytes = await file.read()
-    if len(image_bytes) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
+    max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(image_bytes) > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Файл занадто великий",
         )
 
-    # 2. Завантаження фото в хмару (Cloudinary/S3)
+    # Завантаження фото
     filename = str(uuid.uuid4())
     image_url = await upload_room_image(image_bytes, filename)
 
-    # 3. Створюємо запис у БД зі статусом PROCESSING
+    # Створення запису
     scan = RoomScan(
         user_id=current_user.id,
         image_path=image_url,
         status=ScanStatus.PROCESSING,
     )
     db.add(scan)
-    await db.commit()  # Фіксуємо негайно, щоб статус був доступний для GET
+    await db.commit()
     await db.refresh(scan)
 
-    # 4. Додаємо важкий аналіз у чергу фонових завдань
-    # Це дозволяє FastAPI відразу повернути відповідь 200 OK
+    # Запуск фонового завдання
     background_tasks.add_task(run_deep_analysis, scan.id, image_bytes)
 
     return ScanStatusOut(
@@ -112,7 +113,6 @@ async def get_scan_status(
         db: AsyncSession = Depends(get_db),
         current_user: User = Depends(get_current_user),
 ):
-    # Отримуємо результат аналізу
     result = await db.execute(
         select(RoomScan).where(RoomScan.id == scan_id, RoomScan.user_id == current_user.id)
     )
