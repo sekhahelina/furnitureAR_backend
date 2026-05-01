@@ -20,7 +20,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+origins = [
+    "https://furniture-ar-pis.netlify.app",  # Твій фронтенд на Netlify
+    "http://localhost:5173",                # Для локальної розробки (Vite)
+    "http://localhost:3000",                # Про всяк випадок
+]
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,             # Використовуємо наш список
+    allow_credentials=True,
+    allow_methods=["*"],               # Дозволити всі методи (GET, POST і т.д.)
+    allow_headers=["*"],   )            # Дозволити всі заголовки
 # Роутери
 app.include_router(auth.router)
 app.include_router(analyze.router)
