@@ -7,6 +7,7 @@ app = FastAPI(
     title="Furniture AR Recommendations API",
     description="Інтелектуальна система рекомендацій меблів з AR-візуалізацією",
     version="1.0.0",
+    redirect_slashes=False,
 )
 
 # 1. Спочатку визначаємо список дозволених адрес
